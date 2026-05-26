@@ -1,0 +1,8 @@
+.env
+__pycache__/
+.DS_Store
+venv/
+*.pyc
+languages.json
+playlists.json
+saved.json
