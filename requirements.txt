@@ -4,3 +4,4 @@ yt-dlp
 python-dotenv
 syncedlyrics
 aiohttp
+google-api-python-client
