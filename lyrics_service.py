@@ -12,12 +12,14 @@ class LyricsService:
         self.debug_enabled = os.getenv("LYRICS_DEBUG", "1") != "0"
 
     def get_lyrics(self, artist: str, track_name: str) -> str | None:
+        """Find plain lyrics through LRCLIB and cache successful lookups in memory."""
         artist = (artist or "").strip()
         track_name = (track_name or "").strip()
         if not artist or not track_name:
             self._debug("lyrics not found", reason="missing artist or track")
             return None
 
+        # Lyrics are immutable enough for an in-memory cache and can be long provider calls.
         cache_key = (artist.lower(), track_name.lower())
         if cache_key in self.cache:
             self._debug("lyrics found", provider="cache")
@@ -25,6 +27,7 @@ class LyricsService:
 
         query = f"{artist} {track_name}"
         self._debug("provider request", provider="Lrclib", query=query)
+        # syncedlyrics abstracts the provider request; only plain text is sent to Telegram.
         try:
             lyrics = syncedlyrics.search(
                 query,

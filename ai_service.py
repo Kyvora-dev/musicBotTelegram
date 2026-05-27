@@ -29,10 +29,12 @@ class AIService:
         self.ssl_context = self._build_ssl_context()
 
     def parse_music_intent(self, text: str) -> MusicIntent:
+        """Classify mood requests while falling back safely without an AI key."""
         text = (text or "").strip()
         if not text:
             return MusicIntent("track_search")
 
+        # AI classification is optional; keyword matching keeps mood selection available.
         if self.api_key:
             try:
                 return self._parse_with_ai(text)

@@ -44,6 +44,7 @@ class RecommendationsService:
         return bool(self.api_key)
 
     def get_recommendations(self, query: str, limit: int = DEFAULT_LIMIT) -> list[Recommendation]:
+        """Resolve similar music from Last.fm with progressively broader fallbacks."""
         if not self.is_configured():
             self._debug("Last.fm API key is missing")
             return []
@@ -53,6 +54,7 @@ class RecommendationsService:
             self._debug("Empty recommendations query")
             return []
 
+        # Prefer an exact track, then an artist; broader searches fill incomplete results.
         limit = max(limit, MIN_RECOMMENDATIONS)
         recommendations = []
         try:
@@ -132,6 +134,7 @@ class RecommendationsService:
             self._debug("Last.fm API key is missing")
             return []
 
+        # Mood intents are translated to tags and filtered before reaching the UI.
         tags = [tag.strip() for tag in tags if tag.strip()]
         exclusions = [item.casefold().strip() for item in (exclusions or []) if item.strip()]
         limit = max(limit, MIN_RECOMMENDATIONS)
@@ -173,8 +176,7 @@ class RecommendationsService:
         })
         url = f"{LASTFM_API_URL}?{urlencode(params)}"
 
-        # Last.fm має простий REST API, тому стандартного urlopen тут достатньо
-        # і не додає нову залежність до проєкту.
+        # Last.fm exposes a simple REST endpoint, so urllib avoids another dependency.
         with urlopen(url, timeout=6, context=self.ssl_context) as response:
             data = json.loads(response.read().decode("utf-8"))
 

@@ -3,7 +3,6 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     MenuButtonCommands,
-    ReplyKeyboardRemove,
     Update,
 )
 from telegram.ext import (
@@ -36,6 +35,7 @@ import re
 
 
 def load_env_file(path: str = ".env"):
+    """Load local development variables without overriding deployment secrets."""
     if not os.path.exists(path):
         return
 
@@ -46,6 +46,7 @@ def load_env_file(path: str = ".env"):
                 continue
 
             key, value = line.split("=", 1)
+            # Server-provided environment values take precedence over local .env values.
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
@@ -58,6 +59,7 @@ youtube = None
 
 
 def validate_configuration():
+    """Fail at startup if variables required for core bot operations are missing."""
     missing = [
         name
         for name, value in (("BOT_TOKEN", BOT_TOKEN), ("YOUTUBE_API_KEY", YOUTUBE_API_KEY))
@@ -68,6 +70,7 @@ def validate_configuration():
 
 
 def get_youtube_client():
+    """Create the YouTube Data API client lazily on the first search request."""
     global youtube
     if not YOUTUBE_API_KEY:
         raise RuntimeError("YOUTUBE_API_KEY is not configured.")
@@ -76,15 +79,15 @@ def get_youtube_client():
     return youtube
 
 song_cache    = {}       # video_id -> title
-file_id_cache = {}       # video_id -> telegram file_id (щоб не качати повторно)
-user_saved    = {}       # chat_id  -> [{id, title}]
-playlists     = {}       # chat_id  -> [{id, name}]
-playlist_tracks = {}     # chat_id  -> {playlist_id: [{id, title}]}
+file_id_cache = {}       # video_id -> Telegram file_id for download-free resending
+user_saved    = {}       # chat_id -> [{id, title}]
+playlists     = {}       # chat_id -> [{id, name}]
+playlist_tracks = {}     # chat_id -> {playlist_id: [{id, title}]}
 legacy_saved_migrated = set()
 pending_playlist_save = {}  # chat_id -> video_id awaiting a new playlist name
 pending_playlist_create = set()  # chat_id awaiting a new playlist name from library
-user_language = {}       # chat_id  -> "uk" | "ru" | "en"
-recommendation_cache = {}  # rec_id -> search query для callback рекомендацій
+user_language = {}       # chat_id -> "uk" | "ru" | "en"
+recommendation_cache = {}  # rec_id -> search query used by recommendation callbacks
 recommendation_seq = 0
 track_action_cache = {}    # video_id -> {"title", "artist", "query"}
 recommendations_result_cache = {}  # (kind, query) -> recommendations
@@ -103,7 +106,11 @@ TEXTS = {
     "uk": {
         "choose_language": "🌍 Обери мову:",
         "language_changed": "✅ Мову змінено на українську.",
-        "start": "🎧 Надішли назву пісні, і я знайду її!\n\nВикористовуй кнопку Menu біля поля вводу для пошуку, плейлістів і підбору музики.\n/language — змінити мову",
+        "start": (
+            "🎵 Привіт! Я музичний Telegram-бот.\n"
+            "Я допоможу знайти музику, схожі треки, виконавців, "
+            "тексти пісень і плейлісти."
+        ),
         "saved_empty": "❌ Немає збережених пісень.",
         "saved_title": "❤️ Збережені пісні:",
         "checking": "⏳ Перевіряю трек...",
@@ -149,14 +156,33 @@ TEXTS = {
         "search_button": "🎵 Пошук пісні",
         "my_playlists": "📂 Мої плейлісти",
         "music_picker": "🎧 Підібрати музику",
+        "language_button": "🌍 Мова",
         "help_button": "❓ Допомога",
         "search_prompt": "🎵 Напиши назву пісні або виконавця, якого хочеш знайти.",
         "help_text": (
-            "❓ Що вміє бот:\n"
-            "• Шукай пісні за назвою або виконавцем.\n"
-            "• Підбирай музику за настроєм чи активністю.\n"
-            "• Зберігай треки у власні плейлісти.\n"
-            "• Відкривай тексти пісень і схожі треки."
+            "❓ Допомога\n\n"
+            "🎵 Що вміє бот:\n"
+            "• знаходити пісні\n"
+            "• підбирати музику за настроєм через AI/music picker\n"
+            "• шукати схожі треки та артистів\n"
+            "• показувати текст пісень\n"
+            "• зберігати музику у плейлісти\n"
+            "• працювати українською, російською та англійською\n\n"
+            "📌 Команди:\n"
+            "/start — головне меню\n"
+            "/search — знайти пісню\n"
+            "/playlists — мої плейлісти\n"
+            "/mood — музика за настроєм\n"
+            "/language — змінити мову\n"
+            "/help — допомога\n\n"
+            "💡 Як користуватись:\n"
+            "• Просто напиши назву пісні або виконавця\n"
+            "• Або відкрий «🎧 Підібрати музику»\n"
+            "• Після вибору треку доступні:\n"
+            "  - lyrics\n"
+            "  - схожі треки\n"
+            "  - схожі артисти\n"
+            "  - збереження у плейліст"
         ),
         "music_picker_intro": "🎧 Обери настрій або активність, і я підберу треки для тебе.",
         "picker_workout": "🏋️ Для тренування",
@@ -194,7 +220,11 @@ TEXTS = {
     "ru": {
         "choose_language": "🌍 Выбери язык:",
         "language_changed": "✅ Язык изменён на русский.",
-        "start": "🎧 Отправь название песни, и я найду её!\n\nИспользуй кнопку Menu возле поля ввода для поиска, плейлистов и подбора музыки.\n/language — изменить язык",
+        "start": (
+            "🎵 Привет! Я музыкальный Telegram-бот.\n"
+            "Я помогу найти музыку, похожие треки, исполнителей, "
+            "тексты песен и плейлисты."
+        ),
         "saved_empty": "❌ Нет сохранённых песен.",
         "saved_title": "❤️ Сохранённые песни:",
         "checking": "⏳ Проверяю трек...",
@@ -240,14 +270,33 @@ TEXTS = {
         "search_button": "🎵 Поиск песни",
         "my_playlists": "📂 Мои плейлисты",
         "music_picker": "🎧 Подобрать музыку",
+        "language_button": "🌍 Язык",
         "help_button": "❓ Помощь",
         "search_prompt": "🎵 Напиши название песни или исполнителя, которого хочешь найти.",
         "help_text": (
-            "❓ Что умеет бот:\n"
-            "• Ищи песни по названию или исполнителю.\n"
-            "• Подбирай музыку по настроению или занятию.\n"
-            "• Сохраняй треки в собственные плейлисты.\n"
-            "• Открывай тексты песен и похожие треки."
+            "❓ Помощь\n\n"
+            "🎵 Что умеет бот:\n"
+            "• находить песни\n"
+            "• подбирать музыку по настроению через AI/music picker\n"
+            "• искать похожие треки и исполнителей\n"
+            "• показывать тексты песен\n"
+            "• сохранять музыку в плейлисты\n"
+            "• работать на русском, украинском и английском\n\n"
+            "📌 Команды:\n"
+            "/start — главное меню\n"
+            "/search — найти песню\n"
+            "/playlists — мои плейлисты\n"
+            "/mood — музыка по настроению\n"
+            "/language — изменить язык\n"
+            "/help — помощь\n\n"
+            "💡 Как пользоваться:\n"
+            "• Просто напиши название песни или исполнителя\n"
+            "• Или открой «🎧 Подобрать музыку»\n"
+            "• После выбора трека доступны:\n"
+            "  - lyrics\n"
+            "  - похожие треки\n"
+            "  - похожие исполнители\n"
+            "  - сохранение в плейлист"
         ),
         "music_picker_intro": "🎧 Выбери настроение или занятие, и я подберу треки для тебя.",
         "picker_workout": "🏋️ Для тренировки",
@@ -285,7 +334,11 @@ TEXTS = {
     "en": {
         "choose_language": "🌍 Choose language:",
         "language_changed": "✅ Language changed to English.",
-        "start": "🎧 Send me a song name and I will find it!\n\nUse the Menu button next to the input field for search, playlists and music picks.\n/language — change language",
+        "start": (
+            "🎵 Hello! I am a music Telegram bot.\n"
+            "I can help you find music, similar tracks, artists, "
+            "song lyrics, and playlists."
+        ),
         "saved_empty": "❌ No saved songs yet.",
         "saved_title": "❤️ Saved songs:",
         "checking": "⏳ Checking track...",
@@ -331,14 +384,33 @@ TEXTS = {
         "search_button": "🎵 Search for a song",
         "my_playlists": "📂 My playlists",
         "music_picker": "🎧 Pick music",
+        "language_button": "🌍 Language",
         "help_button": "❓ Help",
         "search_prompt": "🎵 Send the song title or artist you want to find.",
         "help_text": (
-            "❓ What this bot can do:\n"
-            "• Search for songs by title or artist.\n"
-            "• Pick music for a mood or activity.\n"
-            "• Save tracks to your playlists.\n"
-            "• Open lyrics and similar tracks."
+            "❓ Help\n\n"
+            "🎵 What this bot can do:\n"
+            "• find songs\n"
+            "• pick music for your mood with the AI/music picker\n"
+            "• find similar tracks and artists\n"
+            "• show song lyrics\n"
+            "• save music to playlists\n"
+            "• work in English, Ukrainian, and Russian\n\n"
+            "📌 Commands:\n"
+            "/start — main menu\n"
+            "/search — find a song\n"
+            "/playlists — my playlists\n"
+            "/mood — music for your mood\n"
+            "/language — change language\n"
+            "/help — help\n\n"
+            "💡 How to use it:\n"
+            "• Simply send a song title or artist name\n"
+            "• Or open “🎧 Pick music”\n"
+            "• After choosing a track, you can use:\n"
+            "  - lyrics\n"
+            "  - similar tracks\n"
+            "  - similar artists\n"
+            "  - save to playlist"
         ),
         "music_picker_intro": "🎧 Choose a mood or activity and I will find tracks for you.",
         "picker_workout": "🏋️ For a workout",
@@ -377,10 +449,12 @@ TEXTS = {
 
 
 def get_lang(chat_id) -> str:
+    """Return a user's saved interface language or the default localization."""
     return user_language.get(str(chat_id), DEFAULT_LANGUAGE)
 
 
 def t(chat_id, key: str, **kwargs) -> str:
+    """Resolve and format a localized UI string for the current chat."""
     text = TEXTS.get(get_lang(chat_id), TEXTS[DEFAULT_LANGUAGE]).get(key, key)
     return text.format(**kwargs) if kwargs else text
 
@@ -393,6 +467,16 @@ def action_texts(chat_id) -> dict:
         "save": t(chat_id, "save"),
         "saved": t(chat_id, "saved_button"),
     }
+
+
+def main_menu_keyboard(chat_id) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(t(chat_id, "search_button"), callback_data="search_menu")],
+        [InlineKeyboardButton(t(chat_id, "my_playlists"), callback_data="my_playlists")],
+        [InlineKeyboardButton(t(chat_id, "music_picker"), callback_data="music_picker")],
+        [InlineKeyboardButton(t(chat_id, "language_button"), callback_data="language_menu")],
+        [InlineKeyboardButton(t(chat_id, "help_button"), callback_data="help_menu")],
+    ])
 
 
 def music_picker_keyboard(chat_id) -> InlineKeyboardMarkup:
@@ -409,6 +493,7 @@ def music_picker_keyboard(chat_id) -> InlineKeyboardMarkup:
 
 
 def music_picker_tags(preset: str) -> list[str] | None:
+    # Presets become Last.fm tags, sharing the same recommendation path as parsed moods.
     presets = {
         "workout": ["workout", "energetic"],
         "reading": ["ambient", "instrumental"],
@@ -481,6 +566,7 @@ def create_result_session(
 ) -> str:
     global result_session_seq, recommendation_seq
 
+    # Callback data carries only this small ID; full page state remains in memory.
     session_id = str(result_session_seq)
     result_session_seq += 1
     state = {
@@ -499,6 +585,7 @@ def create_result_session(
 
 
 def result_page_keyboard(chat_id: str, session_id: str, state: dict) -> InlineKeyboardMarkup:
+    # Search and recommendation pages share navigation while keeping different callbacks.
     page = state["current_page"]
     results = state["results"]
     total_pages = max(1, math.ceil(len(results) / RESULTS_PAGE_SIZE))
@@ -580,8 +667,8 @@ def get_action_track(chat_id: str, video_id: str) -> dict | None:
     return track_action_cache.get(video_id)
 
 
-# ─── Ліміти ────────────────────────────────────────────────────────────────
-MAX_DURATION_SEC = 10 * 60   # 10 хвилин — Telegram все одноріже великі файли
+# ─── Upload limits ──────────────────────────────────────────────────────────
+MAX_DURATION_SEC = 10 * 60   # Avoid sending excessively long audio files.
 MAX_FILE_BYTES   = 48 * 1024 * 1024  # 48 MB (Telegram bot limit = 50 MB)
 
 DEBUG = True
@@ -593,7 +680,7 @@ def debug(*args):
     if DEBUG:
         print("🔍", *args)
 
-# ─── JSON ───────────────────────────────────────────────────────────────────
+# ─── Local persistence ──────────────────────────────────────────────────────
 def load_saved():
     global user_saved
     try:
@@ -608,6 +695,7 @@ def save_saved():
 
 
 def save_playlists():
+    # Metadata and track membership are persisted separately to keep playlist edits simple.
     data = {
         "playlists": playlists,
         "playlist_tracks": playlist_tracks,
@@ -671,6 +759,7 @@ def load_playlists():
         playlist_tracks = {}
         legacy_saved_migrated = set()
 
+    # Import the older saved-song list once so existing users retain their library.
     changed = False
     for chat_id, songs in user_saved.items():
         if chat_id in legacy_saved_migrated:
@@ -692,6 +781,7 @@ def load_playlists():
 
 
 def load_languages():
+    """Load user language preferences stored between bot restarts."""
     global user_language
     try:
         with open("languages.json", "r") as f:
@@ -701,11 +791,13 @@ def load_languages():
 
 
 def save_languages():
+    """Persist user language preferences for future conversations."""
     with open("languages.json", "w") as f:
         json.dump(user_language, f, indent=2, ensure_ascii=False)
 
 # ─── YouTube Search ─────────────────────────────────────────────────────────
 def search_youtube(query: str) -> list[dict]:
+    """Return lightweight YouTube results; audio is fetched only after selection."""
     res = get_youtube_client().search().list(
         q=f"{query} music",
         part="snippet",
@@ -722,18 +814,15 @@ def search_youtube(query: str) -> list[dict]:
             results.append({"id": vid, "title": title, "artist": artist})
     return results
 
-# ─── Перевірка тривалості БЕЗ завантаження ──────────────────────────────────
+# ─── Track download flow ────────────────────────────────────────────────────
 def check_duration(video_id: str, chat_id) -> tuple[bool, int, str]:
-    """
-    Повертає (ok, duration_sec, title_or_error).
-    ok=False  →  треба відхилити.
-    """
+    """Validate duration from metadata before downloading any audio bytes."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     ydl_opts = {
         "quiet": True,
         "noplaylist": True,
         "skip_download": True,
-        # тільки метадані, без реального запиту потоку
+        # Metadata is sufficient for the pre-download duration check.
         "format": "bestaudio/best",
     }
     try:
@@ -758,8 +847,8 @@ def check_duration(video_id: str, chat_id) -> tuple[bool, int, str]:
         debug("check_duration error:", e)
         return False, 0, t(chat_id, "info_error")
 
-# ─── Знайти завантажений файл (yt-dlp може додати .webm/.m4a тощо) ──────────
 def find_downloaded_file(video_id: str) -> str | None:
+    """Locate the temporary output because yt-dlp chooses the audio extension."""
     patterns = [
         f"/tmp/{video_id}.*",
         f"/tmp/{video_id}",
@@ -772,6 +861,7 @@ def find_downloaded_file(video_id: str) -> str | None:
 
 
 def download_audio(video_id: str) -> str | None:
+    """Download one audio stream into temporary storage for Telegram upload."""
     url = f"https://www.youtube.com/watch?v={video_id}"
     ydl_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio/best",
@@ -786,7 +876,7 @@ def download_audio(video_id: str) -> str | None:
 
     return find_downloaded_file(video_id)
 
-# ─── Відправка кнопок керування ─────────────────────────────────────────────
+# ─── Telegram player delivery ───────────────────────────────────────────────
 async def send_controls(chat_id, context, video_id: str, title: str):
     await context.bot.send_message(
         chat_id=chat_id,
@@ -798,10 +888,10 @@ async def send_controls(chat_id, context, video_id: str, title: str):
         ])
     )
 
-# ─── Головна функція надсилання плеєра ──────────────────────────────────────
 async def send_player(chat_id, context, video_id: str, title: str, show_controls: bool = True):
+    """Send cached Telegram audio or download, validate, upload, and cache a track."""
 
-    # ✅ Якщо file_id вже є — миттєво пересилаємо без скачування
+    # A Telegram file_id avoids repeated yt-dlp downloads for tracks already sent once.
     if video_id in file_id_cache:
         debug(f"Cache hit for {video_id}, sending via file_id")
         cached = file_id_cache[video_id]
@@ -815,7 +905,7 @@ async def send_player(chat_id, context, video_id: str, title: str, show_controls
             await send_controls(chat_id, context, video_id, cached["title"])
         return {"title": cached["title"], "duration": cached["duration"]}
 
-    # 1️⃣  Перевірка тривалості (без завантаження)
+    # Read metadata first so over-limit audio is rejected before downloading.
     status_msg = await context.bot.send_message(chat_id, t(chat_id, "checking"))
 
     ok, duration, info_text = await asyncio.to_thread(check_duration, video_id, chat_id)
@@ -823,7 +913,7 @@ async def send_player(chat_id, context, video_id: str, title: str, show_controls
         await context.bot.edit_message_text(info_text, chat_id, status_msg.message_id)
         return
 
-    # оновлюємо title якщо він був "Song"
+    # Prefer the metadata title when search returned only a generic fallback.
     if title == "Song":
         title = info_text
     song_cache[video_id] = title
@@ -835,7 +925,7 @@ async def send_player(chat_id, context, video_id: str, title: str, show_controls
     try:
         file_path = await asyncio.to_thread(download_audio, video_id)
 
-        # 2️⃣  Перевірка файлу
+        # Validate the temporary file before passing it to Telegram.
         if not file_path or not os.path.exists(file_path):
             await context.bot.edit_message_text(t(chat_id, "file_missing"), chat_id, status_msg.message_id)
             return
@@ -847,7 +937,7 @@ async def send_player(chat_id, context, video_id: str, title: str, show_controls
             os.remove(file_path)
             return
 
-        # 3️⃣  Перевірка розміру (Telegram bot limit = 50 MB)
+        # Stay below Telegram's upload limit.
         if file_size > MAX_FILE_BYTES:
             size_mb = file_size / 1024 / 1024
             await context.bot.edit_message_text(
@@ -857,7 +947,7 @@ async def send_player(chat_id, context, video_id: str, title: str, show_controls
             os.remove(file_path)
             return
 
-        # 4️⃣  Відправка аудіо
+        # Upload only audio files that passed the local validation checks.
         await context.bot.edit_message_text(t(chat_id, "sending"), chat_id, status_msg.message_id)
 
         with open(file_path, "rb") as audio_file:
@@ -868,7 +958,7 @@ async def send_player(chat_id, context, video_id: str, title: str, show_controls
                 duration=duration,
             )
 
-        # ✅ Зберігаємо file_id — наступний раз не будемо качати
+        # Telegram file IDs permit future sends without another YouTube download.
         file_id_cache[video_id] = {
             "file_id":  audio_msg.audio.file_id,
             "title":    title,
@@ -888,7 +978,7 @@ async def send_player(chat_id, context, video_id: str, title: str, show_controls
             except Exception:
                 pass
 
-    # видаляємо статусне повідомлення
+    # Remove transient progress output after the upload attempt.
     try:
         await context.bot.delete_message(chat_id, status_msg.message_id)
     except Exception:
@@ -904,7 +994,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     pending_playlist_save.pop(chat_id, None)
     pending_playlist_create.discard(chat_id)
-    await update.message.reply_text(t(chat_id, "start"), reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        t(chat_id, "start"),
+        reply_markup=main_menu_keyboard(chat_id),
+    )
 
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1008,6 +1101,7 @@ async def send_intent_results(chat_id, context, query: str, tags: list[str], exc
         await context.bot.send_message(chat_id, t(chat_id, "recommendations_fallback"))
         return
 
+    # Both typed mood requests and mood buttons arrive here as Last.fm tag searches.
     cache_key = ("intent", tuple(tags), tuple(exclusions))
     if cache_key in recommendations_result_cache:
         recommendations = recommendations_result_cache[cache_key]
@@ -1096,6 +1190,7 @@ async def on_lyrics_click(q, context, chat_id: str, video_id: str):
 
     await q.answer()
     status_msg = await context.bot.send_message(chat_id, t(chat_id, "lyrics_searching"))
+    # Video titles often contain channel or release suffixes that reduce lyrics matches.
     lyrics_artist = track.get("lyrics_artist") or clean_lyrics_artist(
         track.get("artist", ""),
         track.get("title", ""),
@@ -1146,7 +1241,7 @@ async def on_click_select_track(q, context, chat_id: str, video_id: str):
     await render_track_menu(chat_id, context, track)
 
 
-# ─── Текстовий пошук ─────────────────────────────────────────────────────────
+# ─── Free-text search ───────────────────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = str(update.effective_chat.id)
     query = update.message.text
@@ -1177,6 +1272,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
 
+    # A mood/activity request uses recommendations; literal input follows YouTube search.
     intent = await asyncio.to_thread(ai_service.parse_music_intent, query)
     if intent.mode == "tag_search":
         await send_intent_results(chat_id, context, query, intent.tags, intent.exclusions)
@@ -1193,7 +1289,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(chat_id, "not_found"))
         return
 
-    # зберігаємо state між Step 1 і Step 2, щоб actions працювали тільки після select
+    # Preserve track context so actions are enabled only after selection.
     for r in results:
         song_cache[r["id"]] = r["title"]
         artist = r.get("artist") or t(chat_id, "unknown_artist")
@@ -1205,8 +1301,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=result_page_keyboard(chat_id, session_id, result_sessions[session_id]),
     )
 
-# ─── Callback ────────────────────────────────────────────────────────────────
+# ─── Telegram callbacks ─────────────────────────────────────────────────────
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Route inline keyboard actions without blocking the main update handler."""
     q = update.callback_query
 
     data    = q.data
@@ -1223,6 +1320,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(
                 chat_id,
                 t(chat_id, "start"),
+                reply_markup=main_menu_keyboard(chat_id),
             )
         return
 
@@ -1268,12 +1366,22 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer()
         await q.edit_message_text(t(chat_id, "help_text"))
 
+    # ── language_menu ──────────────────────────────────────────────────────
+    elif data == "language_menu":
+        pending_playlist_save.pop(chat_id, None)
+        pending_playlist_create.discard(chat_id)
+        await q.answer()
+        await q.edit_message_text(
+            t(chat_id, "choose_language"),
+            reply_markup=language_keyboard(),
+        )
+
     # ── main_menu ──────────────────────────────────────────────────────────
     elif data == "main_menu":
         pending_playlist_save.pop(chat_id, None)
         pending_playlist_create.discard(chat_id)
         await q.answer()
-        await q.edit_message_text(t(chat_id, "main_menu"))
+        await q.edit_message_text(t(chat_id, "start"), reply_markup=main_menu_keyboard(chat_id))
 
     # ── new_playlist_menu ──────────────────────────────────────────────────
     elif data == "new_playlist_menu":
@@ -1561,6 +1669,7 @@ async def configure_bot_menu(app):
             BotCommand("search", "Знайти пісню"),
             BotCommand("playlists", "Мої плейлісти"),
             BotCommand("mood", "Підібрати музику"),
+            BotCommand("language", "Змінити мову"),
             BotCommand("help", "Допомога"),
         ],
         "uk": [
@@ -1568,6 +1677,7 @@ async def configure_bot_menu(app):
             BotCommand("search", "Знайти пісню"),
             BotCommand("playlists", "Мої плейлісти"),
             BotCommand("mood", "Підібрати музику"),
+            BotCommand("language", "Змінити мову"),
             BotCommand("help", "Допомога"),
         ],
         "ru": [
@@ -1575,6 +1685,7 @@ async def configure_bot_menu(app):
             BotCommand("search", "Найти песню"),
             BotCommand("playlists", "Мои плейлисты"),
             BotCommand("mood", "Подобрать музыку"),
+            BotCommand("language", "Изменить язык"),
             BotCommand("help", "Помощь"),
         ],
         "en": [
@@ -1582,6 +1693,7 @@ async def configure_bot_menu(app):
             BotCommand("search", "Search for a song"),
             BotCommand("playlists", "Open my playlists"),
             BotCommand("mood", "Pick music by mood"),
+            BotCommand("language", "Change language"),
             BotCommand("help", "Show help"),
         ],
     }
@@ -1590,7 +1702,7 @@ async def configure_bot_menu(app):
     await app.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
-# ─── MAIN ────────────────────────────────────────────────────────────────────
+# ─── Application entry point ─────────────────────────────────────────────────
 if __name__ == "__main__":
     validate_configuration()
     load_saved()

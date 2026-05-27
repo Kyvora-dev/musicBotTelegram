@@ -9,6 +9,7 @@ def _append_pagination(
     previous_text: str,
     next_text: str,
 ):
+    # Results handlers keep page state; buttons only transport the requested page number.
     if not callback_prefix or total_pages <= 1:
         return
 
