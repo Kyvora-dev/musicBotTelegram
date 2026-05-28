@@ -18,11 +18,15 @@ A multilingual Telegram bot for finding music, sending audio tracks, discovering
 
 ## Screenshots
 
-Add screenshots or a short demo GIF here:
+### Start Menu
 
 ![Start Menu](docs/screenshots/start-menu.png)
-- `docs/screenshots/track-actions.png`
-- `docs/screenshots/mood-picker.png`
+
+### Track Actions
+![Track Actions](docs/screenshots/track-actions.png)
+
+### Mood Picker
+![Mood Picker](docs/screenshots/mood-picker.png)
 
 ## Tech Stack
 
