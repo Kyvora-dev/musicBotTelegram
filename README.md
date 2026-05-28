@@ -20,7 +20,7 @@ A multilingual Telegram bot for finding music, sending audio tracks, discovering
 
 Add screenshots or a short demo GIF here:
 
-- `docs/screenshots/start-menu.png`
+![Start Menu](docs/screenshots/start-menu.png)
 - `docs/screenshots/track-actions.png`
 - `docs/screenshots/mood-picker.png`
 
